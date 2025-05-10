@@ -7,20 +7,26 @@
 #include "AutoLight.cginc"
 
 
-
 float4 _Tint;
-sampler2D _MainTex, _DetailTex;
+sampler2D _MainTex, _DetailTex, _DetailMask;
 float4 _MainTex_ST, _DetailTex_ST;
 
 sampler2D _MetallicMap;
 float _Metallic;
 float _Smoothness;
 
+
 sampler2D _EmissionMap;
 float3 _Emission;
 
 sampler2D _NormalMap, _DetailNormalMap;
 float _BumpScale, _DetailBumpScale;
+
+sampler2D _OcclusionMap;
+float _OcclusionStrength;
+
+
+
 
 struct VertexData {
 	float4 vertex : POSITION;
@@ -81,6 +87,35 @@ float3 GetEmission (Interpolators i)
 	#else
 		return 0;
 	#endif
+}
+
+float GetOcclusion (Interpolators i)
+{
+#if defined(_OCCLUSION_MAP)
+	return lerp(1, tex2D(_OcclusionMap, i.uv.xy).g, _OcclusionStrength);
+#else
+	return 1;
+#endif
+}
+
+float GetDetailMask (Interpolators i)
+{
+#if defined (_DETAIL_MASK)
+	return tex2D(_DetailMask, i.uv.xy).a;
+#else
+	return 1;
+#endif
+
+}
+
+float3 GetAlbedo(Interpolators i)
+{
+    float3 albedo = tex2D(_MainTex, i.uv.xy).rgb * _Tint;
+#if defined (_DETAIL_ALBEDO_MAP)
+	float3 details = tex2D(_DetailTex, i.uv.zw) * unity_ColorSpaceDouble;
+    albedo = lerp(albedo, albedo * details, GetDetailMask(i));
+#endif
+	return albedo;
 }
 
 
@@ -186,42 +221,57 @@ UnityIndirect CreateIndirectLight(Interpolators i, float3 viewDir)
 		);
 
 #if UNITY_SPECCUBE_BLENDING
-			float interpolator = unity_SpecCube0_BoxMin.w;
-			UNITY_BRANCH
-			if (interpolator < 0.9999)
-			{
-				envData.reflUVW = BoxProjection(
-					reflectionDir, i.worldPos, unity_SpecCube1_ProbePosition,
-					unity_SpecCube1_BoxMin, unity_SpecCube1_BoxMax
-				);
-				float3 probe1 = Unity_GlossyEnvironment(
-					UNITY_PASS_TEXCUBE_SAMPLER(unity_SpecCube1, unity_SpecCube0),
-					unity_SpecCube1_HDR, envData
-				);
+					float interpolator = unity_SpecCube0_BoxMin.w;
+					UNITY_BRANCH
+					if (interpolator < 0.9999)
+					{
+						envData.reflUVW = BoxProjection(
+							reflectionDir, i.worldPos, unity_SpecCube1_ProbePosition,
+							unity_SpecCube1_BoxMin, unity_SpecCube1_BoxMax
+						);
+						float3 probe1 = Unity_GlossyEnvironment(
+							UNITY_PASS_TEXCUBE_SAMPLER(unity_SpecCube1, unity_SpecCube0),
+							unity_SpecCube1_HDR, envData
+						);
 
-				indirectLight.specular = lerp(probe1, probe0, interpolator);
-			}
-			else {
-				indirectLight.specular = probe0;
-			}
+						indirectLight.specular = lerp(probe1, probe0, interpolator);
+					}
+					else {
+						indirectLight.specular = probe0;
+					}
 #else
-			indirectLight.specular = probe0;
+					indirectLight.specular = probe0;
 #endif
+
+		float occlusion = GetOcclusion(i);
+		indirectLight.diffuse *= occlusion;
+		indirectLight.specular *= occlusion;
 #endif
 
 	return indirectLight;
 
 }
 
+float3 GetTangentSpaceNormal (Interpolators i)
+{
+	float3 normal = float3(0, 0, 1);
+#if defined(_NORMAL_MAP)
+	normal = UnpackScaleNormal(tex2D(_NormalMap, i.uv.xy), _BumpScale);
+#endif
+#if defined(_DETAIL_NORMAL_MAP)
+	float3 detailNormal =
+        UnpackScaleNormal(tex2D(_DetailNormalMap, i.uv.zw), _DetailBumpScale
+	);
+
+    detailNormal = lerp(float3(0, 0, 1), detailNormal, GetDetailMask(i));
+	normal = BlendNormals(normal, detailNormal);
+#endif
+    return normal;
+}
 
 void InitializeFragmentNormal(inout Interpolators i)
 {
-	float3 mainNormal =
-		UnpackScaleNormal(tex2D(_NormalMap, i.uv), _BumpScale);
-	float3 detailNormal =
-		UnpackScaleNormal(tex2D(_DetailNormalMap, i.uv), _DetailBumpScale);
-
-	float3 tangentSpaceNormal = BlendNormals(mainNormal, detailNormal);
+	float3 tangentSpaceNormal = GetTangentSpaceNormal(i);
 
 #if defined(BINORMAL_PER_FRAGMENT)
 		float3 binormal = CreateBinormal(i.normal, i.tangent.xyz, i.tangent.w);
@@ -242,13 +292,10 @@ float4 MyFragmentProgram (Interpolators i) : SV_TARGET {
 
 	float3 viewDir = normalize(_WorldSpaceCameraPos - i.worldPos);
 
-	float3 albedo = tex2D(_MainTex, i.uv.xy).rgb * _Tint.rgb;
-	albedo *= tex2D(_DetailTex, i.uv.zw) * unity_ColorSpaceDouble;
-
 	float3 specularTint;
 	float oneMinusReflectivity;
-	albedo = DiffuseAndSpecularFromMetallic(
-		albedo, GetMetallic(i), specularTint, oneMinusReflectivity	
+	float3 albedo = DiffuseAndSpecularFromMetallic(
+		GetAlbedo(i), GetMetallic(i), specularTint, oneMinusReflectivity	
 	);
 
 	float4 color = UNITY_BRDF_PBS(
