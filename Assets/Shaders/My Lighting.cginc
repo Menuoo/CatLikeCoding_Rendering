@@ -25,6 +25,7 @@ float _BumpScale, _DetailBumpScale;
 sampler2D _OcclusionMap;
 float _OcclusionStrength;
 
+float _AlphaCutoff;
 
 
 
@@ -55,6 +56,15 @@ struct Interpolators {
 			float3 vertexLightColor : TEXCOORD6;
 	#endif
 };
+
+float GetAlpha (Interpolators i)
+{
+	float alpha = _Tint.a;
+#if !defined(_SMOOTHNESS_ALBEDO)
+	return alpha * tex2D(_MainTex, i.uv.xy).a;
+#endif
+	return alpha;
+}
 
 float GetMetallic (Interpolators i)
 {
@@ -117,6 +127,7 @@ float3 GetAlbedo(Interpolators i)
 #endif
 	return albedo;
 }
+
 
 
 void ComputeVertexLightColor (inout Interpolators i) 
@@ -288,8 +299,13 @@ void InitializeFragmentNormal(inout Interpolators i)
 
 
 float4 MyFragmentProgram (Interpolators i) : SV_TARGET {
-	InitializeFragmentNormal(i);
 
+	float alpha = GetAlpha(i);
+#if defined(_RENDERING_CUTOUT)
+	clip(alpha - _AlphaCutoff);
+#endif
+
+	InitializeFragmentNormal(i);
 	float3 viewDir = normalize(_WorldSpaceCameraPos - i.worldPos);
 
 	float3 specularTint;
@@ -297,6 +313,11 @@ float4 MyFragmentProgram (Interpolators i) : SV_TARGET {
 	float3 albedo = DiffuseAndSpecularFromMetallic(
 		GetAlbedo(i), GetMetallic(i), specularTint, oneMinusReflectivity	
 	);
+
+#if defined(_RENDERING_TRANSPARENT)
+	albedo *= alpha;
+	alpha = 1 - oneMinusReflectivity + alpha * oneMinusReflectivity;
+#endif
 
 	float4 color = UNITY_BRDF_PBS(
 		albedo, specularTint,
@@ -306,6 +327,10 @@ float4 MyFragmentProgram (Interpolators i) : SV_TARGET {
 	);
 
 	color.rgb += GetEmission(i);
+#if defined(_RENDERING_FADE) || defined(_RENDERING_TRANSPARENT)
+	color.a = alpha;
+#endif
+
 	return color;
 }
 
