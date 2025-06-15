@@ -3,9 +3,15 @@
 #if !defined(MY_LIGHTING_INCLUDED)
 #define MY_LIGHTING_INCLUDED
 
-#include "UnityPBSLighting.cginc"
-#include "AutoLight.cginc"
+# include "UnityPBSLighting.cginc"
+# include "AutoLight.cginc"
 
+#if defined(FOG_LINEAR) || defined(FOG_EXP) || defined(FOG_EXP2)
+	#if !defined(FOG_DISTANCE)
+		#define FOG_DEPTH 1
+	#endif
+	#define FOG_ON 1
+#endif
 
 float4 _Tint;
 sampler2D _MainTex, _DetailTex, _DetailMask;
@@ -41,20 +47,24 @@ struct Interpolators {
 	float4 uv : TEXCOORD0;
 	float3 normal : TEXCOORD1;
 
-	#if defined(BINORMAL_PER_FRAGMENT)
+#if defined(BINORMAL_PER_FRAGMENT)
 		float4 tangent : TEXCOORD2;
-	#else
+#else
 		float3 tangent : TEXCOORD2;
 		float3 binormal : TEXCOORD3;
-	#endif
+#endif
 
+#if FOG_DEPTH
+	float4 worldPos : TEXCOORD4;
+#else
 	float3 worldPos : TEXCOORD4;
+#endif
 
 	SHADOW_COORDS(5)
 
-	#if defined(VERTEXLIGHT_ON)
+#if defined(VERTEXLIGHT_ON)
 			float3 vertexLightColor : TEXCOORD6;
-	#endif
+#endif
 };
 
 float GetAlpha (Interpolators i)
@@ -68,35 +78,35 @@ float GetAlpha (Interpolators i)
 
 float GetMetallic (Interpolators i)
 {
-	#if defined(_METALLIC_MAP)
+#if defined(_METALLIC_MAP)
 		return tex2D(_MetallicMap, i.uv.xy).r;
-	#else
+#else
 		return _Metallic;
-	#endif
+#endif
 }
 
 float GetSmoothness (Interpolators i)
 {
 	float smoothness = 1;
-	#if defined(_SMOOTHNESS_ALBEDO)
+#if defined(_SMOOTHNESS_ALBEDO)
 		smoothness = tex2D(_MainTex, i.uv.xy).a;
-	#elif defined(_SMOOTHNESS_METALLIC) && defined(_METALLIC_MAP)
+#elif defined(_SMOOTHNESS_METALLIC) && defined(_METALLIC_MAP)
 		smoothness = tex2D(_MetallicMap, i.uv.xy).a;
-	#endif
+#endif
 	return smoothness * _Smoothness;
 }
 
 float3 GetEmission (Interpolators i)
 {
-	#if defined(FORWARD_BASE_PASS) || defined(DEFERRED_PASS)
-		#if defined(_EMISSION_MAP)
+#if defined(FORWARD_BASE_PASS) || defined(DEFERRED_PASS)
+#if defined(_EMISSION_MAP)
 			return tex2D(_EmissionMap, i.uv.xy) * _Emission;
-		#else
+#else
 			return _Emission;
-		#endif
-	#else
+#endif
+#else
 		return 0;
-	#endif
+#endif
 }
 
 float GetOcclusion (Interpolators i)
@@ -137,7 +147,7 @@ void ComputeVertexLightColor (inout Interpolators i)
 			unity_4LightPosX0, unity_4LightPosY0, unity_4LightPosZ0,
 			unity_LightColor[0].rgb, unity_LightColor[1].rgb,
 			unity_LightColor[2].rgb, unity_LightColor[3].rgb,
-			unity_4LightAtten0, i.worldPos, i.normal
+			unity_4LightAtten0, i.worldPos.xyz, i.normal
 		);
 #endif
 }
@@ -153,7 +163,11 @@ Interpolators MyVertexProgram (VertexData v) {
 	Interpolators i;
 
 	i.pos = UnityObjectToClipPos(v.vertex);
-	i.worldPos = mul(unity_ObjectToWorld, v.vertex);
+	i.worldPos.xyz = mul(unity_ObjectToWorld, v.vertex);
+#if FOG_DEPTH
+	i.worldPos.w = i.pos.z;
+#endif
+
 	i.normal = UnityObjectToWorldNormal(v.normal);
 
 #if defined(BINORMAL_PER_FRAGMENT)
@@ -183,12 +197,12 @@ UnityLight CreateLight(Interpolators i)
 #else
 
 #if defined(POINT) || defined(POINT_COOKIE) || defined(SPOT)
-		light.dir = normalize(_WorldSpaceLightPos0.xyz - i.worldPos);
+		light.dir = normalize(_WorldSpaceLightPos0.xyz - i.worldPos.xyz);
 #else
 	light.dir = _WorldSpaceLightPos0.xyz;
 #endif
 
-	UNITY_LIGHT_ATTENUATION(attenuation, i, i.worldPos);
+	UNITY_LIGHT_ATTENUATION(attenuation, i, i.worldPos.xyz);
 
 	light.color = _LightColor0.rgb * attenuation;
 #endif
@@ -228,7 +242,7 @@ UnityIndirect CreateIndirectLight(Interpolators i, float3 viewDir)
 		envData.roughness = 1 - GetSmoothness(i);
 
 		envData.reflUVW = BoxProjection(
-			reflectionDir, i.worldPos, unity_SpecCube0_ProbePosition,
+			reflectionDir, i.worldPos.xyz, unity_SpecCube0_ProbePosition,
 			unity_SpecCube0_BoxMin, unity_SpecCube0_BoxMax
 		);
 		float3 probe0 = Unity_GlossyEnvironment(
@@ -242,7 +256,7 @@ UnityIndirect CreateIndirectLight(Interpolators i, float3 viewDir)
 					if (interpolator < 0.9999)
 					{
 						envData.reflUVW = BoxProjection(
-							reflectionDir, i.worldPos, unity_SpecCube1_ProbePosition,
+							reflectionDir, i.worldPos.xyz, unity_SpecCube1_ProbePosition,
 							unity_SpecCube1_BoxMin, unity_SpecCube1_BoxMax
 						);
 						float3 probe1 = Unity_GlossyEnvironment(
@@ -263,9 +277,9 @@ UnityIndirect CreateIndirectLight(Interpolators i, float3 viewDir)
 		indirectLight.diffuse *= occlusion;
 		indirectLight.specular *= occlusion;
 
-		#if defined(DEFERRED_PASS) && UNITY_ENABLE_REFLECTION_BUFFERS
+#if defined(DEFERRED_PASS) && UNITY_ENABLE_REFLECTION_BUFFERS
 			indirectLight.specular = 0;
-		#endif
+#endif
 
 #endif
 
@@ -307,6 +321,24 @@ void InitializeFragmentNormal(inout Interpolators i)
 	);
 }
 
+float4 ApplyFog (float4 color, Interpolators i)
+{
+#if FOG_ON
+	float viewDistance = length(_WorldSpaceCameraPos - i.worldPos.xyz);
+#if FOG_DEPTH
+		viewDistance = UNITY_Z_0_FAR_FROM_CLIPSPACE(i.worldPos.w);
+#endif
+		UNITY_CALC_FOG_FACTOR_RAW(viewDistance);
+		float3 fogColor = 0;
+		#if defined(FORWARD_BASE_PASS)
+			fogColor = unity_FogColor.rgb;
+		#endif
+		color.rgb = lerp(fogColor, color.rgb, saturate(unityFogFactor));
+#endif
+	return color;
+}
+
+
 struct FragmentOutput
 {
 #if defined(DEFERRED_PASS)
@@ -327,7 +359,7 @@ FragmentOutput MyFragmentProgram (Interpolators i) : SV_TARGET {
 #endif
 
 	InitializeFragmentNormal(i);
-	float3 viewDir = normalize(_WorldSpaceCameraPos - i.worldPos);
+	float3 viewDir = normalize(_WorldSpaceCameraPos - i.worldPos.xyz);
 
 	float3 specularTint;
 	float oneMinusReflectivity;
@@ -365,7 +397,7 @@ FragmentOutput MyFragmentProgram (Interpolators i) : SV_TARGET {
 		output.gBuffer2 = float4(i.normal * 0.5 + 0.5, 1);
 		output.gBuffer3 = color;
 #else
-		output.color = color;
+		output.color = ApplyFog(color, i);
 #endif
 
 	return output;

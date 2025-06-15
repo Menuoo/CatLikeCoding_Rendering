@@ -30,7 +30,9 @@
 	}
 
 	CGINCLUDE
+
 	#define BINORMAL_PER_FRAGMENT
+	//#define FOG_DISTANCE
 
 	ENDCG
 
@@ -42,7 +44,7 @@
 				"LightMode" = "ForwardBase"	
 			}
 			Blend [_SrcBlend] [_DstBlend]
-			ZWrite [_Zwrite]
+			ZWrite [_ZWrite]
 
 			CGPROGRAM
 
@@ -60,6 +62,7 @@
 
 			#pragma multi_compile  _ SHADOWS_SCREEN
 			#pragma multi_compile  _ VERTEXLIGHT_ON
+			#pragma multi_compile_fog
 
 			#pragma vertex MyVertexProgram
 			#pragma fragment MyFragmentProgram
@@ -92,6 +95,7 @@
 			#pragma shader_feature _DETAIL_NORMAL_MAP
 
 			#pragma multi_compile_fwdadd_fullshadows
+			#pragma multi_compile_fog
 
 			#pragma vertex MyVertexProgram
 			#pragma fragment MyFragmentProgram
@@ -105,8 +109,6 @@
 			Tags {
 				"LightMode" = "Deferred"	
 			}	
-			//Blend [_SrcBlend] [_DstBlend]
-			//ZWrite [_Zwrite]
 
 			CGPROGRAM
 
@@ -124,9 +126,6 @@
 			#pragma shader_feature _DETAIL_NORMAL_MAP
 
 			#pragma multi_compile _ UNITY_HDR_ON
-
-			//#pragma multi_compile  _ SHADOWS_SCREEN
-			//#pragma multi_compile  _ VERTEXLIGHT_ON
 
 			#pragma vertex MyVertexProgram
 			#pragma fragment MyFragmentProgram
