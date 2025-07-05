@@ -52,9 +52,10 @@ struct VertexData {
 	float3 normal : NORMAL;
 	float4 tangent : TANGENT;
 	float2 uv1 : TEXCOORD1;
+	float2 uv2 : TEXCOORD2;
 };
 
-struct Interpolators {
+struct InterpolatorsVertex {
 	float4 pos : SV_POSITION;
 	float4 uv : TEXCOORD0;
 	float3 normal : TEXCOORD1;
@@ -81,7 +82,51 @@ struct Interpolators {
 #if defined(LIGHTMAP_ON) || ADDITIONAL_MASKED_DIRECTIONAL_SHADOWS
 			float2 lightmapUV : TEXCOORD6;
 #endif
+
+#if defined(DYNAMICLIGHTMAP_ON)
+	float2 dynamicLightmapUV : TEXCOORD7;
+#endif
 };
+
+struct Interpolators
+{
+	#if defined(LOD_FADE_CROSSFADE)
+		UNITY_VPOS_TYPE vpos : VPOS;
+	#else
+		float4 pos : SV_POSITION;
+	#endif
+
+	float4 uv : TEXCOORD0;
+	float3 normal : TEXCOORD1;
+
+#if defined(BINORMAL_PER_FRAGMENT)
+		float4 tangent : TEXCOORD2;
+#else
+		float3 tangent : TEXCOORD2;
+		float3 binormal : TEXCOORD3;
+#endif
+
+#if FOG_DEPTH
+	float4 worldPos : TEXCOORD4;
+#else
+	float3 worldPos : TEXCOORD4;
+#endif
+
+	UNITY_SHADOW_COORDS(5)
+
+#if defined(VERTEXLIGHT_ON)
+			float3 vertexLightColor : TEXCOORD6;
+#endif
+
+#if defined(LIGHTMAP_ON) || ADDITIONAL_MASKED_DIRECTIONAL_SHADOWS
+			float2 lightmapUV : TEXCOORD6;
+#endif
+
+#if defined(DYNAMICLIGHTMAP_ON)
+	float2 dynamicLightmapUV : TEXCOORD7;
+#endif
+};
+
 
 float GetAlpha (Interpolators i)
 {
@@ -175,9 +220,9 @@ float3 CreateBinormal (float3 normal, float3 tangent, float binormalSign)
 }
 
 
-Interpolators MyVertexProgram (VertexData v) {
-	Interpolators i;
-	UNITY_INITIALIZE_OUTPUT(Interpolators, i);
+InterpolatorsVertex MyVertexProgram (VertexData v) {
+	InterpolatorsVertex i;
+	UNITY_INITIALIZE_OUTPUT(Interpolators, i);		// might have to switch things up here
 
 	i.pos = UnityObjectToClipPos(v.vertex);
 	i.worldPos.xyz = mul(unity_ObjectToWorld, v.vertex);
@@ -201,7 +246,12 @@ Interpolators MyVertexProgram (VertexData v) {
 	i.lightmapUV = v.uv1 * unity_LightmapST.xy + unity_LightmapST.zw;
 #endif
 
-    UNITY_TRANSFER_SHADOW(i, v.uv1);
+#if defined(DYNAMICLIGHTMAP_ON)
+	i.dynamicLightmapUV = 
+		v.uv2 * unity_DynamicLightmapST.xy + unity_DynamicLightmapST.zw;
+#endif
+
+	UNITY_TRANSFER_SHADOW(i, v.uv1);
 
 	ComputeVertexLightColor(i);
 	return i;
@@ -310,10 +360,46 @@ UnityIndirect CreateIndirectLight(Interpolators i, float3 viewDir)
 #endif
 
 	ApplySubtractiveLighting(i, indirectLight);
-
-#else
-		indirectLight.diffuse += max(0, ShadeSH9(float4(i.normal, 1)));
 #endif
+
+
+#if defined(DYNAMICLIGHTMAP_ON)
+		float3 dynamicLightDiffuse = DecodeRealtimeLightmap(
+			UNITY_SAMPLE_TEX2D(unity_DynamicLightmap, i.dynamicLightmapUV)
+		);
+
+#if defined(DIRLIGHTMAP_COMBINED)
+	float4 dynamicLightmapDirection = UNITY_SAMPLE_TEX2D_SAMPLER(
+		unity_DynamicDirectionality, unity_DynamicLightmap, i.dynamicLightmapUV
+	);
+	indirectLight.diffuse += DecodeDirectionalLightmap(
+		dynamicLightDiffuse, dynamicLightmapDirection, i.normal
+	);
+#else
+	indirectLight.diffuse += dynamicLightDiffuse;
+#endif
+#endif
+
+#if !defined(LIGHTMAP_ON) && !defined(DYNAMICLIGHTMAP_ON)
+#if UNITY_LIGHT_PROBE_PROXY_VOLUME
+	if (unity_ProbeVolumeParams.x == 1){	
+		indirectLight.diffuse = SHEvalLinearL0L1_SampleProbeVolume(
+			float4(i.normal, 1), i.worldPos
+		);
+		indirectLight.diffuse = max(0, indirectLight.diffuse);
+
+#if defined(UNITY_COLORSPACE_GAMMA)
+			indirectLight.diffuse = LinearToGammaSpace(indirectLight.diffuse);
+#endif
+	}
+	else {
+		indirectLight.diffuse += max(0, ShadeSH9(float4(i.normal, 1)));
+	}
+#else
+	indirectLight.diffuse += max(0, ShadeSH9(float4(i.normal, 1)));
+#endif
+#endif
+
 		float3 reflectionDir = reflect(-viewDir, i.normal);
 
 		Unity_GlossyEnvironmentData envData;
@@ -434,6 +520,10 @@ struct FragmentOutput
 };
 
 FragmentOutput MyFragmentProgram (Interpolators i) : SV_TARGET {
+
+	#if defined(LOD_FADE_CROSSFADE)
+		UnityApplyDitherCrossFade(i.vpos);
+	#endif
 
 	float alpha = GetAlpha(i);
 #if defined(_RENDERING_CUTOUT)
